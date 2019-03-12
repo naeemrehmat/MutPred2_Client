@@ -3,6 +3,8 @@ import requests
 import mechanize
 import pickle
 import os
+from threading import Thread
+import time
 
 class Job():
     def __init__(self , email, fasta_sequence , p_value=0.5 ):
@@ -35,7 +37,9 @@ class Job():
             print( exp )
         
         return
-        
+    
+    
+    
     def check_job_status( self ):
         if self.job_status=="DONE":
             return self.job_status
@@ -61,14 +65,14 @@ class Job():
         if self.check_job_status()=="DONE":
             if self.result!=None:
                 return self.result
-            
             try:
                 self.result = requests.post( "http://mutpred2.mutdb.org/tmp/"+self.job_id+".csv", verify=False ).text
             except Exception as exp:
                 print("Could Not Fetch Results:", exp )
         else:
-            print( "Please Wait Job is not completed yet" )
-
+            #print( "Please Wait Job is not completed yet" )
+            pass
+        
         return self.result
     
     
@@ -85,7 +89,7 @@ class MutPred2_Client():
             
             if option=="1" :
                 with open("recover_client.pkl","rb") as f:
-                    self =  pickle.load( f )
+                    self.jobs =  pickle.load( f ).jobs
                 
             """
             self.email= temp_client.email
@@ -98,21 +102,30 @@ class MutPred2_Client():
        
             
             
+    def save_object_state(self):
+        with open("recover_client.pkl","wb") as f:
+            pickle.dump( self , f ) 
     
     
         
     def add_job( self , email ,fasta_sequence , p_value=0.5  ):
         for job_ in self.jobs:
-            if job_.fasta_sequence==fasta_sequence:
+            if job_.fasta_sequence==fasta_sequence and job_.job_id!=None:
                 print( "Job is already running and job ID:" , job_.job_id )
                 return
+            elif job_.fasta_sequence==fasta_sequence and job_.job_id==None:
+                job_.submit_job()
+                self.save_object_state()
+                return
+            
         
         current_job = Job(email,fasta_sequence,p_value)
         current_job.submit_job()
-        self.jobs.append( current_job )
         
-        with open("recover_client.pkl","wb") as f:
-            pickle.dump( self , f ) 
+        if current_job.job_id!=None :
+            self.jobs.append( current_job )
+            self.save_object_state()
+        
             
         return 
         
@@ -120,29 +133,60 @@ class MutPred2_Client():
         completed_jobs = 0
         running_jobs   = 0
         
-        for job_ in self.jobs:
-            if job_.check_job_status() =="DONE":
+        threads_arr = []
+        for i,job_ in enumerate(self.jobs):
+            if job_.job_status =="RUNNING":
+                thread1 = Thread( target = job_.check_job_status )
+                thread1.start()
+                threads_arr.append(thread1)
+                if i%100==0:
+                    time.sleep(5)
+                
+        for thrd in threads_arr:
+            thrd.join()
+            
+        for job_ in self.jobs:    
+            if job_.job_status =="DONE":
                 completed_jobs += 1
-            elif job_.check_job_status() =="RUNNING":
+            elif job_.job_status =="RUNNING":
                 running_jobs   += 1
             
                 
         print(  "Completed Jobs =" , completed_jobs  )
         print(  "Running Jobs =" , running_jobs  )
         
+        self.save_object_state() 
     
     
     def save_results(self , file_name):
-        data= "Gene_Name,Substitution,MutPred2_Score,Molecular_Mechanisms,Affected PROSITE and ELM Motifs,Remarks\n"
+        data= "Gene,Variation,MutPred2_Score,Molecular_Mechanisms,Affected PROSITE and ELM Motifs,Remarks\n"
         jobs_completed = 0
+        
+        threads_array = []
+        for i,job_ in enumerate(self.jobs):
+            if job_.result==None:
+                thread = Thread( target = job_.job_result )
+                thread.start()
+                threads_array.append(thread)
+                if i%100==0:
+                    time.sleep(5)
+                
+        for thread in threads_array:
+            thread.join()
+                
+        
         for job_ in self.jobs:
-            if job_.job_result()!=None:
-                data+= job_.job_result()
+            if job_.result!=None:
+                data+= job_.result
                 jobs_completed += 1
+ 
         if jobs_completed >0:
             with open(file_name,"w") as f:
                 f.write(data)
             print("Result of ",jobs_completed," completed jobs is saved in current directory as:" ,file_name )
+            
+            self.save_object_state()
+            
         else:
             print("No Job is completed yet to be saved")
                
